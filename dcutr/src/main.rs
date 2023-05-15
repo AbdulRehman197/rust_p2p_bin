@@ -202,14 +202,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::NewListenAddr { .. } => {}
                 SwarmEvent::Dialing { .. } => {}
                 SwarmEvent::ConnectionEstablished { .. } => {}
-                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent {
-                    ..
-                })) => {
+                SwarmEvent::Behaviour(Event::Ping(_)) => {}
+                SwarmEvent::Behaviour(Event::Identify(identify::Event::Sent { .. })) => {
                     println!("Told relay its public address.");
                     told_relay_observed_addr = true;
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
+                SwarmEvent::Behaviour(Event::Identify(identify::Event::Received {
                     info: identify::Info { observed_addr, .. },
                     ..
                 })) => {
@@ -248,22 +246,22 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Listening on {:?}", address);
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(
+                SwarmEvent::Behaviour(Event::Relay(
                     relay::client::Event::ReservationReqAccepted { .. },
                 )) => {
                     assert!(opts.mode == Mode::Listen);
                     println!("Relay accepted our reservation request.");
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
+                SwarmEvent::Behaviour(Event::Relay(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                SwarmEvent::Behaviour(Event::Dcutr(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
+                SwarmEvent::Behaviour(Event::Identify(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
+                SwarmEvent::Behaviour(Event::Ping(_)) => {}
                 SwarmEvent::ConnectionEstablished {
                     peer_id, endpoint, ..
                 } => {
