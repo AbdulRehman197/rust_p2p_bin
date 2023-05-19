@@ -17,12 +17,13 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
-
+use async_std::io;
 use clap::Parser;
 use futures::{
     executor::{block_on, ThreadPool},
     future::FutureExt,
     stream::StreamExt,
+    AsyncBufReadExt,
 };
 use libp2p::{
     core::{
@@ -32,14 +33,18 @@ use libp2p::{
     },
     dcutr,
     dns::DnsConfig,
-    identify, identity, noise, ping, relay,
+    gossipsub, identify, identity, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
     tcp, yamux, PeerId,
 };
 // use log::info;
+use std::collections::hash_map::DefaultHasher;
+
 use std::error::Error;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 #[clap(name = "libp2p DCUtR client")]
@@ -110,6 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ping: ping::Behaviour,
         identify: identify::Behaviour,
         dcutr: dcutr::Behaviour,
+        gossipsub: gossipsub::Behaviour,
     }
 
     #[derive(Debug)]
@@ -119,6 +125,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Identify(identify::Event),
         Relay(relay::client::Event),
         Dcutr(dcutr::Event),
+        Gossipsub(gossipsub::Event),
     }
 
     impl From<ping::Event> for Event {
@@ -144,6 +151,37 @@ fn main() -> Result<(), Box<dyn Error>> {
             Event::Dcutr(e)
         }
     }
+    impl From<gossipsub::Event> for Event {
+        fn from(e: gossipsub::Event) -> Self {
+            Event::Gossipsub(e)
+        }
+    }
+
+    // To content-address message, we can take the hash of message and use it as an ID.
+    let message_id_fn = |message: &gossipsub::Message| {
+        let mut s = DefaultHasher::new();
+        message.data.hash(&mut s);
+        gossipsub::MessageId::from(s.finish().to_string())
+    };
+
+    // Set a custom gossipsub configuration
+    let gossipsub_config = gossipsub::ConfigBuilder::default()
+        .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+        .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+        .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
+        .build()
+        .expect("Valid config");
+
+    // build a gossipsub network behaviour
+    let mut gossipsub = gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Signed(local_key.clone()),
+        gossipsub_config,
+    )
+    .expect("Correct configuration");
+    // Create a Gossipsub topic
+    let topic = gossipsub::IdentTopic::new("test-net");
+    // subscribes to our topic
+    gossipsub.subscribe(&topic)?;
 
     let behaviour = Behaviour {
         relay_client: client,
@@ -153,6 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             local_key.public(),
         )),
         dcutr: dcutr::Behaviour::new(local_peer_id),
+        gossipsub,
     };
 
     let mut swarm = match ThreadPool::new() {
@@ -160,7 +199,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(_) => SwarmBuilder::without_executor(transport, behaviour, local_peer_id),
     }
     .build();
+    // Read full lines from stdin
 
+    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
+
+    println!("Enter messages via STDIN and they will be sent to connected peers using Gossipsub");
     swarm
         .listen_on(
             Multiaddr::empty()
@@ -174,12 +217,27 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut delay = futures_timer::Delay::new(std::time::Duration::from_secs(1)).fuse();
         loop {
             futures::select! {
+                line = stdin.select_next_some() => {
+                    if let Err(e) = swarm
+                        .behaviour_mut().gossipsub
+                        .publish(topic.clone(), line.expect("Stdin not to close").as_bytes()) {
+                        println!("Publish error: {e:?}");
+                    }
+                },
                 event = swarm.next() => {
                     match event.unwrap() {
                         SwarmEvent::NewListenAddr { address, .. } => {
                             println!("Listening on {:?}", address);
-                        }
-                        event => panic!("{event:?}"),
+                        },
+                        // SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                        //     propagation_source: peer_id,
+                        //     message_id: id,
+                        //     message,
+                        // })) => println!(
+                        //         "Got message: '{}' with id: {id} from peer: {peer_id}",
+                        //         String::from_utf8_lossy(&message.data),
+                        //     ),
+                            event => panic!("{event:?}"),
                     }
                 }
                 _ = delay => {
@@ -202,12 +260,24 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::NewListenAddr { .. } => {}
                 SwarmEvent::Dialing { .. } => {}
                 SwarmEvent::ConnectionEstablished { .. } => {}
-                SwarmEvent::Behaviour(Event::Ping(_)) => {}
-                SwarmEvent::Behaviour(Event::Identify(identify::Event::Sent { .. })) => {
+                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent {
+                    ..
+                })) => {
                     println!("Told relay its public address.");
                     told_relay_observed_addr = true;
                 }
-                SwarmEvent::Behaviour(Event::Identify(identify::Event::Received {
+                // SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                //     propagation_source: peer_id,
+                //     message_id: id,
+                //     message,
+                // })) => {
+                //     println!(
+                //         "Got message: '{}' with id: {id} from peer: {peer_id}",
+                //         String::from_utf8_lossy(&message.data),
+                //     )
+                // }
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received {
                     info: identify::Info { observed_addr, .. },
                     ..
                 })) => {
@@ -246,22 +316,25 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Listening on {:?}", address);
                 }
-                SwarmEvent::Behaviour(Event::Relay(
+                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
                     relay::client::Event::ReservationReqAccepted { .. },
                 )) => {
                     assert!(opts.mode == Mode::Listen);
                     println!("Relay accepted our reservation request.");
                 }
-                SwarmEvent::Behaviour(Event::Relay(event)) => {
+                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(Event::Dcutr(event)) => {
+                SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(Event::Identify(event)) => {
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
                     println!("{:?}", event)
                 }
-                SwarmEvent::Behaviour(Event::Ping(_)) => {}
+                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(event)) => {
+                    println!("{:?}", event)
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
                 SwarmEvent::ConnectionEstablished {
                     peer_id, endpoint, ..
                 } => {
