@@ -6,9 +6,27 @@ publish = false
 license = "MIT"
 
 [dependencies]
+
 clap = { version = "4.2.7", features = ["derive"] }
+async-std = { version = "1.12.0", features = ["attributes"] }
 env_logger = "0.10.0"
 futures = "0.3.28"
 futures-timer = "3.0"
-libp2p = { version = "0.51.3", features = ["async-std", "dns", "dcutr", "identify", "macros", "noise", "ping", "relay", "rendezvous", "tcp", "tokio", "yamux"] }
+libp2p = { version = "0.51.3", features = [
+    "async-std",
+    "dns",
+    "dcutr",
+    "identify",
+    "macros",
+    "noise",
+    "ping",
+    "relay",
+    "rendezvous",
+    "tcp",
+    "tokio",
+    "yamux",
+    "gossipsub",
+] }
 log = "0.4"
+async-trait = "0.1"
+
