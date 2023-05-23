@@ -267,10 +267,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::ConnectionEstablished {
                     peer_id, endpoint, ..
                 } => {
-                    info!("Established connection to {:?} via {:?}", peer_id, endpoint);
+                    println!("Established connection to {:?} via {:?}", peer_id, endpoint);
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                    info!("Outgoing connection error to {:?}: {:?}", peer_id, error);
+                    println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
                 }
                 _ => {}
             }
