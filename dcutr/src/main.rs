@@ -177,7 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 event = swarm.next() => {
                     match event.unwrap() {
                         SwarmEvent::NewListenAddr { address, .. } => {
-                            info!("Listening on {:?}", address);
+                            println!("Listening on {:?}", address);
                         }
                         event => panic!("{event:?}"),
                     }
