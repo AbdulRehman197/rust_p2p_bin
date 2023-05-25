@@ -17,12 +17,13 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
-
+use async_std::io;
 use clap::Parser;
 use futures::{
     executor::{block_on, ThreadPool},
     future::FutureExt,
-    stream::StreamExt,
+    select,
+    stream::StreamExt, AsyncBufReadExt,
 };
 use libp2p::{
     core::{
@@ -32,14 +33,17 @@ use libp2p::{
     },
     dcutr,
     dns::DnsConfig,
-    identify, identity, noise, ping, relay,
+    gossipsub, identify, identity, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmBuilder, SwarmEvent},
     tcp, yamux, PeerId,
 };
 use log::info;
+use std::collections::hash_map::DefaultHasher;
 use std::error::Error;
+use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
+use std::time::Duration;
 
 #[derive(Debug, Parser)]
 #[clap(name = "libp2p DCUtR client")]
@@ -88,7 +92,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Local peer id: {:?}", local_peer_id);
 
     let (relay_transport, client) = relay::client::new(local_peer_id);
-
     let transport = OrTransport::new(
         relay_transport,
         block_on(DnsConfig::system(tcp::async_io::Transport::new(
@@ -110,6 +113,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         ping: ping::Behaviour,
         identify: identify::Behaviour,
         dcutr: dcutr::Behaviour,
+        gossipsub: gossipsub::Behaviour,
     }
 
     #[derive(Debug)]
@@ -119,6 +123,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Identify(identify::Event),
         Relay(relay::client::Event),
         Dcutr(dcutr::Event),
+        Gossipsub(gossipsub::Event),
     }
 
     impl From<ping::Event> for Event {
@@ -145,6 +150,39 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    impl From<gossipsub::Event> for Event {
+        fn from(e: gossipsub::Event) -> Self {
+            Event::Gossipsub(e)
+        }
+    }
+    // Goosibe Code Start
+    // To content-address message, we can take the hash of message and use it as an ID.
+    let message_id_fn = |message: &gossipsub::Message| {
+        let mut s = DefaultHasher::new();
+        message.data.hash(&mut s);
+        gossipsub::MessageId::from(s.finish().to_string())
+    };
+
+    // Set a custom gossipsub configuration
+    let gossipsub_config = gossipsub::ConfigBuilder::default()
+        .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+        .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
+        .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
+        .build()
+        .expect("Valid config");
+
+    // build a gossipsub network behaviour
+    let mut gossipsub = gossipsub::Behaviour::new(
+        gossipsub::MessageAuthenticity::Signed(local_key.clone()),
+        gossipsub_config,
+    )
+    .expect("Correct configuration");
+    // Create a Gossipsub topic
+    let topic = gossipsub::IdentTopic::new("test-net");
+    // subscribes to our topic
+    gossipsub.subscribe(&topic)?;
+
+    //Gossibe Code End
     let behaviour = Behaviour {
         relay_client: client,
         ping: ping::Behaviour::new(ping::Config::new()),
@@ -153,6 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             local_key.public(),
         )),
         dcutr: dcutr::Behaviour::new(local_peer_id),
+        gossipsub: gossipsub,
     };
 
     let mut swarm = match ThreadPool::new() {
@@ -268,6 +307,34 @@ fn main() -> Result<(), Box<dyn Error>> {
                     peer_id, endpoint, ..
                 } => {
                     println!("Established connection to {:?} via {:?}", peer_id, endpoint);
+                    // Read full lines from stdin
+                    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
+                    // Kick it off
+                    loop {
+                        select! {
+                            line = stdin.select_next_some() => {
+                                if let Err(e) = swarm
+                                    .behaviour_mut().gossipsub
+                                    .publish(topic.clone(), line.expect("Stdin not to close").as_bytes()) {
+                                    println!("Publish error: {e:?}");
+                                }
+                            },
+                            event = swarm.select_next_some() => match event {
+                                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                                    propagation_source: peer_id,
+                                    message_id: id,
+                                    message,
+                                })) => println!(
+                                        "Got message: '{}' with id: {id} from peer: {peer_id}",
+                                        String::from_utf8_lossy(&message.data),
+                                    ),
+                                SwarmEvent::NewListenAddr { address, .. } => {
+                                    println!("Local node is listening on {address}");
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                     println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
