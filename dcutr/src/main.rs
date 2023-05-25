@@ -23,7 +23,8 @@ use futures::{
     executor::{block_on, ThreadPool},
     future::FutureExt,
     select,
-    stream::StreamExt, AsyncBufReadExt,
+    stream::StreamExt,
+    AsyncBufReadExt,
 };
 use libp2p::{
     core::{
@@ -319,22 +320,19 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     println!("Publish error: {e:?}");
                                 }
                             },
-                            event = swarm.select_next_some() => match event {
-                                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                                    propagation_source: peer_id,
-                                    message_id: id,
-                                    message,
-                                })) => println!(
-                                        "Got message: '{}' with id: {id} from peer: {peer_id}",
-                                        String::from_utf8_lossy(&message.data),
-                                    ),
-                                SwarmEvent::NewListenAddr { address, .. } => {
-                                    println!("Local node is listening on {address}");
-                                }
-                                _ => {}
-                            }
+
                         }
                     }
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                    propagation_source: peer_id,
+                    message_id: id,
+                    message,
+                })) => {
+                    println!(
+                        "Got message: '{}' with id: {id} from peer: {peer_id}",
+                        String::from_utf8_lossy(&message.data),
+                    )
                 }
                 SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                     println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
