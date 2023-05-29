@@ -17,12 +17,12 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
+
 use async_std::io;
 use clap::Parser;
 use futures::{
     executor::{block_on, ThreadPool},
     future::FutureExt,
-    select,
     stream::StreamExt,
     AsyncBufReadExt,
 };
@@ -45,7 +45,6 @@ use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::time::Duration;
-
 #[derive(Debug, Parser)]
 #[clap(name = "libp2p DCUtR client")]
 struct Opts {
@@ -93,6 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     info!("Local peer id: {:?}", local_peer_id);
 
     let (relay_transport, client) = relay::client::new(local_peer_id);
+
     let transport = OrTransport::new(
         relay_transport,
         block_on(DnsConfig::system(tcp::async_io::Transport::new(
@@ -107,56 +107,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     .multiplex(yamux::Config::default())
     .boxed();
 
-    #[derive(NetworkBehaviour)]
-    #[behaviour(to_swarm = "Event", event_process = false)]
-    struct Behaviour {
-        relay_client: relay::client::Behaviour,
-        ping: ping::Behaviour,
-        identify: identify::Behaviour,
-        dcutr: dcutr::Behaviour,
-        gossipsub: gossipsub::Behaviour,
-    }
-
-    #[derive(Debug)]
-    #[allow(clippy::large_enum_variant)]
-    enum Event {
-        Ping(ping::Event),
-        Identify(identify::Event),
-        Relay(relay::client::Event),
-        Dcutr(dcutr::Event),
-        Gossipsub(gossipsub::Event),
-    }
-
-    impl From<ping::Event> for Event {
-        fn from(e: ping::Event) -> Self {
-            Event::Ping(e)
-        }
-    }
-
-    impl From<identify::Event> for Event {
-        fn from(e: identify::Event) -> Self {
-            Event::Identify(e)
-        }
-    }
-
-    impl From<relay::client::Event> for Event {
-        fn from(e: relay::client::Event) -> Self {
-            Event::Relay(e)
-        }
-    }
-
-    impl From<dcutr::Event> for Event {
-        fn from(e: dcutr::Event) -> Self {
-            Event::Dcutr(e)
-        }
-    }
-
-    impl From<gossipsub::Event> for Event {
-        fn from(e: gossipsub::Event) -> Self {
-            Event::Gossipsub(e)
-        }
-    }
-    // Goosibe Code Start
     // To content-address message, we can take the hash of message and use it as an ID.
     let message_id_fn = |message: &gossipsub::Message| {
         let mut s = DefaultHasher::new();
@@ -183,7 +133,49 @@ fn main() -> Result<(), Box<dyn Error>> {
     // subscribes to our topic
     gossipsub.subscribe(&topic)?;
 
-    //Gossibe Code End
+    #[derive(NetworkBehaviour)]
+    #[behaviour(to_swarm = "Event")]
+    struct Behaviour {
+        relay_client: relay::client::Behaviour,
+        ping: ping::Behaviour,
+        identify: identify::Behaviour,
+        dcutr: dcutr::Behaviour,
+        gossipsub: gossipsub::Behaviour,
+    }
+
+    #[derive(Debug)]
+    #[allow(clippy::large_enum_variant)]
+    enum Event {
+        Ping(ping::Event),
+        Identify(identify::Event),
+        Relay(relay::client::Event),
+        Dcutr(dcutr::Event),
+    }
+
+    impl From<ping::Event> for Event {
+        fn from(e: ping::Event) -> Self {
+            Event::Ping(e)
+        }
+    }
+
+    impl From<identify::Event> for Event {
+        fn from(e: identify::Event) -> Self {
+            Event::Identify(e)
+        }
+    }
+
+    impl From<relay::client::Event> for Event {
+        fn from(e: relay::client::Event) -> Self {
+            Event::Relay(e)
+        }
+    }
+
+    impl From<dcutr::Event> for Event {
+        fn from(e: dcutr::Event) -> Self {
+            Event::Dcutr(e)
+        }
+    }
+
     let behaviour = Behaviour {
         relay_client: client,
         ping: ping::Behaviour::new(ping::Config::new()),
@@ -192,7 +184,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             local_key.public(),
         )),
         dcutr: dcutr::Behaviour::new(local_peer_id),
-        gossipsub: gossipsub,
+        gossipsub,
     };
 
     let mut swarm = match ThreadPool::new() {
@@ -200,6 +192,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         Err(_) => SwarmBuilder::without_executor(transport, behaviour, local_peer_id),
     }
     .build();
+    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
 
     swarm
         .listen_on(
@@ -211,13 +204,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Wait to listen on all interfaces.
     block_on(async {
-        let mut delay = futures_timer::Delay::new(std::time::Duration::from_secs(1)).fuse();
+        let mut delay: futures::future::Fuse<futures_timer::Delay> =
+            futures_timer::Delay::new(std::time::Duration::from_secs(1)).fuse();
         loop {
             futures::select! {
                 event = swarm.next() => {
                     match event.unwrap() {
                         SwarmEvent::NewListenAddr { address, .. } => {
-                            println!("Listening on {:?}", address);
+                            info!("Listening on {:?}", address);
                         }
                         event => panic!("{event:?}"),
                     }
@@ -281,64 +275,62 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .unwrap();
         }
     }
+    println!("Enter messages via STDIN and they will be sent to connected peers using Gossipsub");
 
     block_on(async {
         loop {
-            match swarm.next().await.unwrap() {
-                SwarmEvent::NewListenAddr { address, .. } => {
-                    info!("Listening on {:?}", address);
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
-                    relay::client::Event::ReservationReqAccepted { .. },
-                )) => {
-                    assert!(opts.mode == Mode::Listen);
-                    info!("Relay accepted our reservation request.");
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
-                    info!("{:?}", event)
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
-                    info!("{:?}", event)
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
-                    info!("{:?}", event)
-                }
-                SwarmEvent::Behaviour(BehaviourEvent::Ping(_)) => {}
-                SwarmEvent::ConnectionEstablished {
-                    peer_id, endpoint, ..
-                } => {
-                    println!("Established connection to {:?} via {:?}", peer_id, endpoint);
-                    // Read full lines from stdin
-                    let mut stdin = io::BufReader::new(io::stdin()).lines().fuse();
-                    // Kick it off
-                    loop {
-                        select! {
-                            line = stdin.select_next_some() => {
-                                if let Err(e) = swarm
-                                    .behaviour_mut().gossipsub
-                                    .publish(topic.clone(), line.expect("Stdin not to close").as_bytes()) {
-                                    println!("Publish error: {e:?}");
-                                }
-                            },
-
-                        }
+            futures::select!(
+                line = stdin.select_next_some() => {
+                    if let Err(e) = swarm
+                        .behaviour_mut().gossipsub
+                        .publish(topic.clone(), line.expect("Stdin not to close").as_bytes()) {
+                        println!("Publish error: {e:?}");
                     }
+                },
+                event = swarm.select_next_some() => match event {
+                    SwarmEvent::NewListenAddr { address, .. } => {
+                        println!("Listening on {:?}", address);
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
+                        relay::client::Event::ReservationReqAccepted { .. },
+                    )) => {
+                        assert!(opts.mode == Mode::Listen);
+                        info!("Relay accepted our reservation request.");
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
+                        info!("{:?}", event)
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
+                        print!("+++++++++++++DCUTR++++++++++++++++++");
+                        println!("{:?}", event)
+                        //info!("{:?}", event)
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Identify(event)) => {
+                        info!("{:?}", event)
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                        propagation_source: peer_id,
+                        message_id: id,
+                        message,
+                    })) => println!(
+                            "Got message: '{}' with id: {id} from peer: {peer_id}",
+                            String::from_utf8_lossy(&message.data),
+                        ),
+                    SwarmEvent::Behaviour(BehaviourEvent::Ping(event)) => {
+                        info!("{:?}", event)
+                    }
+                    SwarmEvent::ConnectionEstablished {
+                        peer_id, endpoint, ..
+                    } => {
+                        println!("Established connection to {:?} via {:?}", peer_id, endpoint);
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                    }
+                    SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
+                        info!("Outgoing connection error to {:?}: {:?}", peer_id, error);
+                    }
+                    _ => {}
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer_id,
-                    message_id: id,
-                    message,
-                })) => {
-                    println!(
-                        "Got message: '{}' with id: {id} from peer: {peer_id}",
-                        String::from_utf8_lossy(&message.data),
-                    )
-                }
-                SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                    println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
-                }
-                _ => {}
-            }
+            )
         }
     })
 }

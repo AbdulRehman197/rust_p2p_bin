@@ -6,14 +6,14 @@ publish = false
 license = "MIT"
 
 [dependencies]
-clap = { version = "4.2.7", features = ["derive"] }
+clap = { version = "4.3.0", features = ["derive"] }
 env_logger = "0.10.0"
 futures = "0.3.28"
 futures-timer = "3.0"
 async-std = { version = "1.12", features = ["attributes"] }
+
 libp2p = { version = "0.51.3", features = [
     "async-std",
-    "gossipsub",
     "dns",
     "dcutr",
     "identify",
@@ -22,6 +22,7 @@ libp2p = { version = "0.51.3", features = [
     "ping",
     "relay",
     "rendezvous",
+    "gossipsub",
     "tcp",
     "tokio",
     "yamux",
