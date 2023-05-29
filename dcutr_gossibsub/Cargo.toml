@@ -1,0 +1,30 @@
+[package]
+name = "dcutr"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[dependencies]
+clap = { version = "4.3.0", features = ["derive"] }
+env_logger = "0.10.0"
+futures = "0.3.28"
+futures-timer = "3.0"
+async-std = { version = "1.12", features = ["attributes"] }
+
+libp2p = { version = "0.51.3", features = [
+    "async-std",
+    "dns",
+    "dcutr",
+    "identify",
+    "macros",
+    "noise",
+    "ping",
+    "relay",
+    "rendezvous",
+    "gossipsub",
+    "tcp",
+    "tokio",
+    "yamux",
+] }
+log = "0.4"
