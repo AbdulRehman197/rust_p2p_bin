@@ -246,13 +246,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                 SwarmEvent::NewListenAddr { address, .. } => {
                     println!("Listening on {:?}", address);
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(
+                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
                     relay::client::Event::ReservationReqAccepted { .. },
                 )) => {
                     assert!(opts.mode == Mode::Listen);
                     info!("Relay accepted our reservation request.");
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
+                SwarmEvent::Behaviour(BehaviourEvent::RelayClient(event)) => {
                     info!("{:?}", event)
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Dcutr(event)) => {
