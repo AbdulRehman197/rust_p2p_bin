@@ -326,7 +326,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
                     SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
-                        info!("Outgoing connection error to {:?}: {:?}", peer_id, error);
+                        println!("Outgoing connection error to {:?}: {:?}", peer_id, error);
                     }
                     _ => {}
                 }
